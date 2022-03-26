@@ -146,7 +146,7 @@ def _ipv4_addr(addr):
 def ipv4_addr(addr, mask):
     """convert ipv4 address (source/dest) to string repr
     """
-    return ipaddress.IPv4Interface((_ipv4_addr(addr), _ipv4_addr(mask)))
+    return ipaddress.IPv4Network((_ipv4_addr(addr), _ipv4_addr(mask)))
 
 
 def ipv4_addr_args(flag, addr, mask, invert):
@@ -208,7 +208,7 @@ def match_args(match, entry):
         yield '[unsupported revision]'
     yield '-m'
     if module.alias:
-        yield module.alias(ct.byref(module))
+        yield module.alias(ct.byref(match)).decode()
     else:
         yield name
 
