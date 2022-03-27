@@ -330,6 +330,7 @@ struct event_header_t {
     u32     uid;
     char    comm[TASK_COMM_LEN];
     /*int     retval;*/
+    u32     net_ns_inum;
     int     full_entries; /* either we have recorded full entries or just header */
     u64     timestamp_ns; /* Put this at last to serve as 64bit alignment for later data */
 };
@@ -362,6 +363,10 @@ int kprobe__nf_setsockopt(struct pt_regs *ctx,
     header->tgid = __pid_tgid >> 32;
     header->pid = __pid_tgid;
     header->uid = bpf_get_current_uid_gid();
+    header->net_ns_inum = 0;
+#ifdef CONFIG_NET_NS
+    header->net_ns_inum = sk->__sk_common.skc_net.net->ns.inum;
+#endif
     header->full_entries = 0;
     bpf_get_current_comm(header->comm, sizeof(header->comm));
     struct ipt_replace * repl = (void *)(header + 1);
@@ -382,15 +387,35 @@ def convert_time(first_ts, first_ts_real, timestamp_ns):
     return time.gmtime(t)
 
 
-def print_event(b, mktime, cpu, data, size):
+def search_netns(inum, base_path='/var/run/netns'):
+    if not os.path.exists(base_path):
+        return None
+
+    for entry in os.listdir(base_path):
+        if os.stat(os.path.join(base_path, entry)).st_ino == inum:
+            return entry
+
+    return None
+
+
+def print_event(b, mktime, get_netns, cpu, data, size):
     event = b["iptevents"].event(data)
     print('*' * 20)
     tstr = time.strftime('%Y-%m-%dT%H:%M:%S', mktime(event.timestamp_ns))
     repl = ct.cast(ct.byref(event, ct.sizeof(event)), ct.POINTER(ipt_replace))[0]
-    print('%s %d %d %s %s' % (tstr, event.tgid, event.pid, event.comm.decode(), repl.name.decode()))
+    root_net_ns_inum = os.stat('/proc/1/ns/net').st_ino
+    print('time tgid pid comm netns table num_entries size')
+    if event.net_ns_inum == root_net_ns_inum or not event.net_ns_inum:
+        netns = '-'
+    else:
+        netns = event.net_ns_inum
+        netnsname = get_netns(event.net_ns_inum)
+        if netnsname:
+            netns = '%s(%s)' % (netnsname, event.net_ns_inum)
+    print('%s %d %d %s %s %s %s %s' % (tstr, event.tgid, event.pid, event.comm.decode(),
+                                 netns,
+                                 repl.name.decode(), repl.num_entries, repl.size))
     if event.full_entries:
-        print('repl.num_entries: %s' % repl.num_entries)
-        print('repl.size: %s' % repl.size)
         print_table(repl)
 
 
@@ -410,7 +435,7 @@ def main():
     first_ts = BPF.monotonic_time()
     first_ts_real = time.time()
     b["iptevents"].open_perf_buffer(
-        partial(print_event, b, partial(convert_time, first_ts, first_ts_real)),
+        partial(print_event, b, partial(convert_time, first_ts, first_ts_real), search_netns),
         page_cnt=page_cnt)
     print('ready')
     while 1:
